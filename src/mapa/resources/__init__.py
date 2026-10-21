@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import json
 import logging
@@ -101,12 +102,31 @@ def filter_tse_dataset(
     filter: typing.Callable[[pd.DataFrame], pd.DataFrame],
 ):
     result = pd.DataFrame()
-    for chunk in pd.read_csv(
-        input, encoding="latin_1", sep=";", chunksize=READING_CHUNK_SIZE
+    rows_read = 0
+    rows_selected = 0
+    _logger.info("Iniciando filtro CSV: origem=%s destino=%s", input, output)
+    for block, chunk in enumerate(
+        pd.read_csv(input, encoding="latin_1", sep=";", chunksize=READING_CHUNK_SIZE),
+        start=1,
     ):
-        result = pd.concat([result, filter(chunk)])
+        selected = filter(chunk)
+        rows_read += len(chunk)
+        rows_selected += len(selected)
+        result = pd.concat([result, selected])
+        _logger.info(
+            "Progresso filtro CSV: blocos=%s linhas_lidas=%s linhas_selecionadas=%s",
+            block,
+            rows_read,
+            rows_selected,
+        )
 
     result.to_csv(output)
+    _logger.info(
+        "Filtro CSV concluído: destino=%s linhas_lidas=%s linhas_selecionadas=%s",
+        output,
+        rows_read,
+        rows_selected,
+    )
 
 
 def _votacao_source(ano: int, estado: str) -> Path:
@@ -204,21 +224,54 @@ def download_votacao_agregada(ano: int, estado: str | None = None) -> Path:
             len(states),
         )
         source = _votacao_source(ano, state)
-        state_groups = []
-        for chunk in pd.read_csv(
-            source,
-            sep=";",
-            encoding="latin_1",
-            usecols=columns,
-            chunksize=100_000,
-            low_memory=False,
-        ):
-            state_groups.append(
-                chunk.groupby(
-                    ["CD_MUNICIPIO", "NM_MUNICIPIO", "SG_UF", "NR_VOTAVEL"],
-                    as_index=False,
-                )["QT_VOTOS"].sum()
+
+        def read_state(quoting: int) -> tuple[list[pd.DataFrame], int]:
+            state_groups = []
+            rows_read = 0
+            for block, chunk in enumerate(
+                pd.read_csv(
+                    source,
+                    sep=";",
+                    encoding="latin_1",
+                    usecols=columns,
+                    chunksize=100_000,
+                    low_memory=False,
+                    quoting=quoting,
+                ),
+                start=1,
+            ):
+                rows_read += len(chunk)
+                state_groups.append(
+                    chunk.groupby(
+                        ["CD_MUNICIPIO", "NM_MUNICIPIO", "SG_UF", "NR_VOTAVEL"],
+                        as_index=False,
+                    )["QT_VOTOS"].sum()
+                )
+                _logger.info(
+                    "Progresso leitura TSE: ano=%s estado=%s blocos=%s linhas_lidas=%s",
+                    ano,
+                    state,
+                    block,
+                    rows_read,
+                )
+            return state_groups, rows_read
+
+        try:
+            state_groups, rows_read = read_state(csv.QUOTE_MINIMAL)
+        except pd.errors.ParserError as error:
+            _logger.warning(
+                "CSV TSE com aspas inválidas; tentando leitura literal: ano=%s estado=%s arquivo=%s erro=%s",
+                ano,
+                state,
+                source,
+                error,
             )
+            try:
+                state_groups, rows_read = read_state(csv.QUOTE_NONE)
+            except pd.errors.ParserError as retry_error:
+                raise RuntimeError(
+                    f"Falha ao ler CSV TSE do ano {ano}, estado {state}: {source}"
+                ) from retry_error
         if state_groups:
             aggregated.append(
                 pd.concat(state_groups)

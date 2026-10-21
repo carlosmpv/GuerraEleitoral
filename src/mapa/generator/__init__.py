@@ -685,12 +685,27 @@ async def generate_map(
     mapa = _create_map(initial_coords or location, zoom)
     cluster = MarkerCluster().add_to(mapa)
     heat_data = []
-    for (name, lat, lon), row in votacao_com_local.iterrows():
+    total_locations = len(votacao_com_local)
+    progress_interval = max(1, (total_locations + 9) // 10)
+    _logger.info("Iniciando montagem de locais: total=%s", total_locations)
+    for processed, ((name, lat, lon), row) in enumerate(
+        votacao_com_local.iterrows(), start=1
+    ):
         lat = float(str(lat).replace(",", "."))
         lon = float(str(lon).replace(",", "."))
         votes = float(row["QT_VOTOS"])
         heat_data.append([lat, lon, votes])
         folium.Marker(location=[lat, lon], popup=name, tooltip=name).add_to(cluster)
+        if (
+            processed == 1
+            or processed % progress_interval == 0
+            or processed == total_locations
+        ):
+            _logger.info(
+                "Progresso montagem de locais: processados=%s/%s",
+                processed,
+                total_locations,
+            )
     values = [point[2] for point in heat_data]
     params = heatmap_params(values, escala)
     HeatMap(

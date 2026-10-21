@@ -43,7 +43,7 @@ async def home() -> HTMLResponse:
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Mapa eleitoral do Brasil · Legenda 80</title>
+    <title>Mapa eleitoral de São Paulo · Unidade Popular</title>
     <style>
         * { box-sizing: border-box; }
         html, body, main, iframe { width: 100%; height: 100%; margin: 0; border: 0; }
@@ -56,11 +56,11 @@ async def home() -> HTMLResponse:
 </head>
 <body>
     <main>
-        <iframe id="mapa-brasil" title="Mapa eleitoral do Brasil, legenda 80" src="/ano/2022/brasil/legenda/80?escala=linear"></iframe>
+        <iframe id="mapa-brasil" title="Mapa eleitoral de São Paulo, Unidade Popular" src="/ano/2026/estado/SP/legenda/80?escala=linear"></iframe>
     </main>
     <div id="home-loading" role="status" aria-live="polite">
         <span class="home-spinner" aria-hidden="true"></span>
-        <span>Carregando mapa do Brasil · legenda 80</span>
+        <span>Carregando mapa de São Paulo · Unidade Popular</span>
     </div>
     <script>
         document.getElementById('mapa-brasil').addEventListener('load', () => {

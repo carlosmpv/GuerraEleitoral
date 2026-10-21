@@ -201,10 +201,10 @@ def test_painel_preserva_filtros_sem_requisicao_em_change(monkeypatch):
     assert "window.location" in rendered
 
 
-def test_pagina_inicial_carrega_brasil_legenda_80():
+def test_pagina_inicial_carrega_sao_paulo_unidade_popular():
     response = TestClient(api).get("/")
 
     assert response.status_code == 200
-    assert 'src="/ano/2022/brasil/legenda/80?escala=linear"' in response.text
-    assert "Carregando mapa do Brasil · legenda 80" in response.text
+    assert 'src="/ano/2026/estado/SP/legenda/80?escala=linear"' in response.text
+    assert "Carregando mapa de São Paulo · Unidade Popular" in response.text
     assert 'id="home-loading"' in response.text
