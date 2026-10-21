@@ -1,7 +1,9 @@
 import asyncio
 import copy
 import html
+import logging
 import re
+import time
 import typing
 import unicodedata
 from functools import lru_cache
@@ -12,6 +14,7 @@ import numpy as np
 import pandas as pd
 import requests
 from folium.plugins import HeatMap, MarkerCluster
+from shapely import make_valid
 from shapely.geometry import shape
 from shapely.ops import unary_union
 
@@ -22,6 +25,7 @@ from mapa.resources import (
 )
 
 _TypeFiltro = typing.Callable[[pd.DataFrame], pd.Series]
+_logger = logging.getLogger(__name__)
 _UF_CODES = {
     "RO": "11",
     "AC": "12",
@@ -99,7 +103,15 @@ def _fetch_municipios_ibge() -> list[dict]:
 
 
 def centroide_mapa(malha: dict, garantir_dentro: bool = True) -> tuple[float, float]:
-    geometries = [shape(feature["geometry"]) for feature in malha["features"]]
+    geometries = []
+    for feature in malha["features"]:
+        geometry = shape(feature["geometry"])
+        if not geometry.is_valid:
+            geometry = make_valid(geometry)
+        if not geometry.is_empty:
+            geometries.append(geometry)
+    if not geometries:
+        raise ValueError("A malha IBGE não contém geometrias válidas")
     geometry = unary_union(geometries)
     point = geometry.representative_point() if garantir_dentro else geometry.centroid
     return point.y, point.x
@@ -341,6 +353,10 @@ def render_painel_filtros(
     if not legend_options:
         legend_options = [("", "Sem legenda disponível")]
     html_panel = f"""
+<div id="mapa-loading" role="status" aria-live="polite">
+    <span class="mapa-spinner" aria-hidden="true"></span>
+    <span id="mapa-loading-message">Preparando mapa...</span>
+</div>
 <section id="mapa-filtros" aria-label="Filtros do mapa">
   <button class="mapa-handle" type="button" aria-label="Arraste para expandir ou recolher"><span></span></button>
   <form id="mapa-filtros-form">
@@ -354,12 +370,16 @@ def render_painel_filtros(
   </form>
 </section>
 <style>
-#mapa-filtros {{ position: fixed; z-index: 10000; left: 18px; top: 18px; width: 290px; max-height: calc(100vh - 36px); overflow: auto; padding: 18px; background: #fff; color: #202b35; box-shadow: 0 8px 32px #12202c40; font: 14px/1.4 system-ui, sans-serif; }}
+#mapa-filtros {{ position: fixed; z-index: 10000; right: 18px; bottom: 18px; width: 290px; max-height: calc(100vh - 36px); overflow: auto; padding: 18px; background: #fff; color: #202b35; box-shadow: 0 8px 32px #12202c40; font: 14px/1.4 system-ui, sans-serif; }}
 #mapa-filtros h2 {{ margin: 0 0 14px; font-size: 17px; }}
 #mapa-filtros label {{ display: block; margin: 0 0 11px; font-weight: 600; }}
 #mapa-filtros select {{ display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 9px; border: 1px solid #bdc8ce; border-radius: 3px; background: #fff; color: inherit; font: inherit; }}
 #mapa-filtros .mapa-aplicar {{ width: 100%; padding: 10px; border: 0; background: #087e8b; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }}
 #mapa-filtros .mapa-handle {{ display: none; }}
+#mapa-loading {{ position: fixed; inset: 0; z-index: 20000; display: flex; align-items: center; justify-content: center; gap: 14px; background: #f4f7f8ed; color: #202b35; font: 600 15px/1.4 system-ui, sans-serif; transition: opacity 180ms ease, visibility 180ms ease; }}
+#mapa-loading.is-hidden {{ visibility: hidden; opacity: 0; pointer-events: none; }}
+.mapa-spinner {{ width: 24px; height: 24px; border: 3px solid #c6d5d9; border-top-color: #087e8b; border-radius: 50%; animation: mapa-spin 750ms linear infinite; }}
+@keyframes mapa-spin {{ to {{ transform: rotate(360deg); }} }}
 @media (max-width: 700px) {{
   #mapa-filtros {{ inset: auto 0 0; width: auto; height: 26dvh; max-height: 92dvh; overflow: hidden; padding: 0 18px 18px; border-radius: 12px 12px 0 0; transition: height 220ms ease; }}
   #mapa-filtros.expanded {{ height: 92dvh; overflow-y: auto; }}
@@ -371,8 +391,14 @@ def render_painel_filtros(
 (() => {{
   const panel = document.getElementById('mapa-filtros');
   const form = document.getElementById('mapa-filtros-form');
+    const loading = document.getElementById('mapa-loading');
+    const loadingMessage = document.getElementById('mapa-loading-message');
+    const hideLoading = () => loading.classList.add('is-hidden');
+    window.addEventListener('load', hideLoading, {{ once: true }});
   form.addEventListener('submit', (event) => {{
     event.preventDefault();
+        loadingMessage.textContent = 'Carregando novo mapa...';
+        loading.classList.remove('is-hidden');
     const data = new FormData(form);
     const ano = encodeURIComponent(data.get('ano'));
     const municipalitySelect = form.elements.namedItem('municipio');
@@ -415,8 +441,18 @@ def render_painel_filtros(
 
 
 async def _load_votes(ano: int, estado: str | None) -> pd.DataFrame:
+    started = time.perf_counter()
+    _logger.info("Carregando votos agregados: ano=%s estado=%s", ano, estado or "BR")
     path = await asyncio.to_thread(download_votacao_agregada, ano, estado)
-    return pd.read_csv(path)
+    votes = pd.read_csv(path)
+    _logger.info(
+        "Votos prontos: ano=%s estado=%s registros=%s duracao_s=%.2f",
+        ano,
+        estado or "BR",
+        len(votes),
+        time.perf_counter() - started,
+    )
+    return votes
 
 
 async def _generate_polygon_map(
@@ -425,20 +461,48 @@ async def _generate_polygon_map(
     escala: str,
     estado: str | None,
 ) -> str:
+    started = time.perf_counter()
     malha_nivel, malha_id = (
         ("estados", _UF_CODES[estado]) if estado else ("paises", "BR")
     )
+    _logger.info(
+        "Iniciando mapa de malha: ano=%s nivel=%s id=%s legenda=%s escala=%s",
+        ano,
+        malha_nivel,
+        malha_id,
+        getattr(filtro, "prefix", ""),
+        escala,
+    )
+    _logger.info("Carregando malha IBGE: nivel=%s id=%s", malha_nivel, malha_id)
     malha = await asyncio.to_thread(_fetch_malha_ibge, malha_nivel, malha_id)
+    _logger.info(
+        "Malha IBGE pronta: nivel=%s features=%s", malha_nivel, len(malha["features"])
+    )
     votes = await _load_votes(ano, estado)
     legendas = sorted(votes["NR_VOTAVEL"].astype(str).str[:2].unique().tolist())
     votes = votes[filtro(votes)]
+    _logger.info(
+        "Votos filtrados: legenda=%s registros=%s",
+        getattr(filtro, "prefix", ""),
+        len(votes),
+    )
     location, zoom = await asyncio.to_thread(resolver_view, estado, None)
     mapa = folium.Map(location=location, zoom_start=zoom)
     _add_geojson_layer(mapa, malha, votes, escala)
     render_painel_filtros(
         mapa, ano, estado, None, getattr(filtro, "prefix", ""), escala, legendas
     )
-    return mapa.get_root().render()
+    _logger.info("Serializando HTML do mapa de malha")
+    content = mapa.get_root().render()
+    _logger.info(
+        "Mapa pronto: ano=%s nivel=%s id=%s bytes=%s duracao_s=%.2f",
+        ano,
+        malha_nivel,
+        malha_id,
+        len(content),
+        time.perf_counter() - started,
+    )
+    return content
 
 
 async def generate_map_brasil(
@@ -463,9 +527,19 @@ async def generate_map(
     overwrite: bool = False,
     escala: str = "linear",
 ) -> str:
+    started = time.perf_counter()
+    _logger.info(
+        "Iniciando mapa municipal: ano=%s estado=%s municipio=%s legenda=%s escala=%s",
+        ano,
+        estado,
+        municipio,
+        getattr(filtro, "prefix", ""),
+        escala,
+    )
     votacao_secao_path, eleitorado_local_votacao_path = await download_resources(
         ano=ano, estado=estado, municipio=municipio
     )
+    _logger.info("CSVs municipais disponíveis; lendo e cruzando dados")
     votacao_secao = pd.read_csv(votacao_secao_path)
     legendas = sorted(votacao_secao["NR_VOTAVEL"].astype(str).str[:2].unique().tolist())
     votacao_secao = votacao_secao[filtro(votacao_secao)]
@@ -512,4 +586,14 @@ async def generate_map(
         escala,
         legendas,
     )
-    return mapa.get_root().render()
+    _logger.info("Serializando HTML do mapa municipal")
+    content = mapa.get_root().render()
+    _logger.info(
+        "Mapa municipal pronto: ano=%s estado=%s municipio=%s bytes=%s duracao_s=%.2f",
+        ano,
+        estado,
+        municipio,
+        len(content),
+        time.perf_counter() - started,
+    )
+    return content

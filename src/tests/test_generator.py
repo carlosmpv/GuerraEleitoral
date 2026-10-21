@@ -1,10 +1,12 @@
 import asyncio
+import logging
 
 import folium
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
 
-from mapa import generator
+from mapa import api, generator
 
 
 def _fake_municipalities():
@@ -49,6 +51,24 @@ def test_centroide_mapa_usa_ponto_representativo():
     }
 
     assert generator.centroide_mapa(malha) == (1.0, 1.0)
+
+
+def test_centroide_mapa_repara_poligono_invalido():
+    malha = {
+        "features": [
+            {
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], [2, 2], [0, 2], [2, 0], [0, 0]]],
+                }
+            }
+        ]
+    }
+
+    latitude, longitude = generator.centroide_mapa(malha)
+
+    assert 0 <= latitude <= 2
+    assert 0 <= longitude <= 2
 
 
 def test_votos_usam_nome_oficial_e_uf_para_obter_codigo_ibge(monkeypatch):
@@ -100,7 +120,10 @@ def test_geojson_renderiza_contagem_e_tooltip_sem_heatmap(monkeypatch):
     assert "HeatMap" not in rendered
 
 
-def test_mapa_brasil_preserva_opcoes_de_legenda(monkeypatch):
+def test_mapa_brasil_preserva_opcoes_de_legenda_e_registra_progresso(
+    monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(generator, "_fetch_municipios_ibge", _fake_municipalities)
     monkeypatch.setattr(
         generator,
@@ -143,6 +166,8 @@ def test_mapa_brasil_preserva_opcoes_de_legenda(monkeypatch):
 
     assert 'name="legenda"' in rendered
     assert 'value="22"' in rendered
+    assert "Iniciando mapa de malha" in caplog.text
+    assert "Mapa pronto" in caplog.text
 
 
 def test_painel_preserva_filtros_sem_requisicao_em_change(monkeypatch):
@@ -164,5 +189,18 @@ def test_painel_preserva_filtros_sem_requisicao_em_change(monkeypatch):
     assert 'value="22"' in rendered
     assert "@media (max-width: 700px)" in rendered
     assert "pointerdown" in rendered
+    assert 'id="mapa-loading"' in rendered
+    assert "Carregando novo mapa..." in rendered
+    assert "addEventListener('submit'" in rendered
+    assert "right: 18px; bottom: 18px" in rendered
     assert "fetch(" not in rendered
     assert "window.location" in rendered
+
+
+def test_pagina_inicial_carrega_brasil_legenda_80():
+    response = TestClient(api).get("/")
+
+    assert response.status_code == 200
+    assert 'src="/ano/2022/brasil/legenda/80?escala=linear"' in response.text
+    assert "Carregando mapa do Brasil · legenda 80" in response.text
+    assert 'id="home-loading"' in response.text
