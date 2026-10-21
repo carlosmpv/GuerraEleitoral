@@ -1,10 +1,15 @@
-import io
+from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
-from mapa.generator import filtro_partido, generate_map
+from mapa.generator import (
+    filtro_partido,
+    generate_map,
+    generate_map_brasil,
+    generate_map_estado,
+)
 
 api = FastAPI()
 
@@ -17,17 +22,39 @@ async def map(
     estado: str,
     municipio: str,
     legenda: str,
-    lat: float = Query(-21.179104, ge=-90, le=90),
-    lng: float = Query(-47.884856, ge=-180, le=180),
+    escala: Literal["linear", "quantil", "log"] = "linear",
 ):
     content = await generate_map(
         ano,
         filtro_partido(legenda),
         estado=estado,
         municipio=municipio,
-        initial_coords=[lat, lng],
+        escala=escala,
     )
 
+    return HTMLResponse(content=content)
+
+
+@api.get("/ano/{ano}/brasil/legenda/{legenda}")
+async def map_brasil(
+    ano: int,
+    legenda: str,
+    escala: Literal["linear", "quantil", "log"] = "linear",
+) -> HTMLResponse:
+    content = await generate_map_brasil(ano, filtro_partido(legenda), escala=escala)
+    return HTMLResponse(content=content)
+
+
+@api.get("/ano/{ano}/estado/{estado}/legenda/{legenda}")
+async def map_estado(
+    ano: int,
+    estado: str,
+    legenda: str,
+    escala: Literal["linear", "quantil", "log"] = "linear",
+) -> HTMLResponse:
+    content = await generate_map_estado(
+        ano, filtro_partido(legenda), estado=estado, escala=escala
+    )
     return HTMLResponse(content=content)
 
 

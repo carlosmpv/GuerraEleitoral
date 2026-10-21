@@ -55,30 +55,33 @@ def filter_tse_dataset(
     result.to_csv(output)
 
 
+def _votacao_source(ano: int, estado: str) -> Path:
+    url = f"https://cdn.tse.jus.br/estatistica/sead/odsele/votacao_secao/votacao_secao_{ano}_{estado}.zip"
+    downloaded_zip_path = DOWNLOADS_PATH / f"votacao_secao_{ano}_{estado}.zip"
+    extracted_data_path = DOWNLOADS_PATH / f"votacao_secao_{ano}_{estado}"
+    csv_data_path = extracted_data_path / f"votacao_secao_{ano}_{estado}.csv"
+    if not downloaded_zip_path.exists():
+        download(url, downloaded_zip_path)
+    if not extracted_data_path.exists():
+        extract_zip(downloaded_zip_path, extracted_data_path)
+    if not csv_data_path.exists():
+        raise RuntimeError(f"{csv_data_path} should exist")
+    return csv_data_path
+
+
 async def download_votacao_secao(
     ano: int,
     estado: str = "SP",
     municipio: str = "Ribeirão Preto",
     overwrite=False,
 ):
-    url = f"https://cdn.tse.jus.br/estatistica/sead/odsele/votacao_secao/votacao_secao_{ano}_{estado}.zip"
-    downloaded_zip_path = DOWNLOADS_PATH / f"votacao_secao_{ano}_{estado}.zip"
-    extracted_data_path = DOWNLOADS_PATH / f"votacao_secao_{ano}_{estado}"
-    csv_data_path = extracted_data_path / f"votacao_secao_{ano}_{estado}.csv"
     result_path = DATASETS_PATH / f"votacao_secao_{municipio}_{estado}_{ano}.csv"
 
     if result_path.exists() and not overwrite:
         print(f"{result_path} already exists, ignoring")
         return result_path
 
-    if not downloaded_zip_path.exists():
-        download(url, downloaded_zip_path)
-
-    if not extracted_data_path.exists():
-        extract_zip(downloaded_zip_path, extracted_data_path)
-
-    if not csv_data_path.exists():
-        raise RuntimeError(f"{csv_data_path} should exist")
+    csv_data_path = _votacao_source(ano, estado)
 
     filter_tse_dataset(
         csv_data_path,
@@ -87,6 +90,81 @@ async def download_votacao_secao(
     )
 
     print("Done.")
+    return result_path
+
+
+def download_votacao_agregada(ano: int, estado: str | None = None) -> Path:
+    """Cacheia votos agregados por município para uma UF ou para o Brasil."""
+    states = (
+        [estado]
+        if estado
+        else [
+            "AC",
+            "AL",
+            "AP",
+            "AM",
+            "BA",
+            "CE",
+            "DF",
+            "ES",
+            "GO",
+            "MA",
+            "MT",
+            "MS",
+            "MG",
+            "PA",
+            "PB",
+            "PR",
+            "PE",
+            "PI",
+            "RJ",
+            "RN",
+            "RS",
+            "RO",
+            "RR",
+            "SC",
+            "SP",
+            "SE",
+            "TO",
+        ]
+    )
+    scope = estado or "BRASIL"
+    result_path = DATASETS_PATH / f"votacao_agregada_{scope}_{ano}.csv"
+    if result_path.exists():
+        return result_path
+
+    aggregated = []
+    columns = ["CD_MUNICIPIO", "NM_MUNICIPIO", "SG_UF", "NR_VOTAVEL", "QT_VOTOS"]
+    for state in states:
+        source = _votacao_source(ano, state)
+        state_groups = []
+        for chunk in pd.read_csv(
+            source,
+            sep=";",
+            encoding="latin_1",
+            usecols=columns,
+            chunksize=100_000,
+            low_memory=False,
+        ):
+            state_groups.append(
+                chunk.groupby(
+                    ["CD_MUNICIPIO", "NM_MUNICIPIO", "SG_UF", "NR_VOTAVEL"],
+                    as_index=False,
+                )["QT_VOTOS"].sum()
+            )
+        if state_groups:
+            aggregated.append(
+                pd.concat(state_groups)
+                .groupby(
+                    ["CD_MUNICIPIO", "NM_MUNICIPIO", "SG_UF", "NR_VOTAVEL"],
+                    as_index=False,
+                )["QT_VOTOS"]
+                .sum()
+            )
+
+    if not aggregated:
+        raise RuntimeError(f"Nenhum dado de votação encontrado para {ano}")
+    pd.concat(aggregated, ignore_index=True).to_csv(result_path, index=False)
     return result_path
 
 

@@ -11,6 +11,7 @@ dependencies = [
     "pandas>=3.0.6",
     "pytest>=9.1.1",
     "requests>=2.34.2",
+    "shapely>=2.1.2",
 ]
 
 [project.scripts]
