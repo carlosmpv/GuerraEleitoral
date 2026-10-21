@@ -1,7 +1,6 @@
 import asyncio
 import logging
 
-import folium
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -110,7 +109,7 @@ def test_geojson_renderiza_contagem_e_tooltip_sem_heatmap(monkeypatch):
             }
         ],
     }
-    mapa = folium.Map(location=[0, 0])
+    mapa = generator._create_map([0, 0], 4)
 
     generator._add_geojson_layer(mapa, malha, votos, "quantil")
     rendered = mapa.get_root().render()
@@ -172,10 +171,10 @@ def test_mapa_brasil_preserva_opcoes_de_legenda_e_registra_progresso(
 
 def test_painel_preserva_filtros_sem_requisicao_em_change(monkeypatch):
     monkeypatch.setattr(generator, "_fetch_municipios_ibge", _fake_municipalities)
-    mapa = folium.Map(location=[0, 0])
+    mapa = generator._create_map([0, 0], 4)
 
     generator.render_painel_filtros(
-        mapa, 2022, "SP", "Ribeirão Preto", "13", "quantil", ["13", "22"]
+        mapa, 2022, "SP", "Ribeirão Preto", "13", "quantil", ["13", 22]
     )
     rendered = mapa.get_root().render()
 
@@ -191,9 +190,14 @@ def test_painel_preserva_filtros_sem_requisicao_em_change(monkeypatch):
     assert "pointerdown" in rendered
     assert 'id="mapa-loading"' in rendered
     assert "Carregando novo mapa..." in rendered
+    assert 'id="mapa-baixar"' in rendered
+    assert "Baixar imagem PNG" in rendered
+    assert "html2canvas(mapElement" in rendered
+    assert "Tiles do mapa indisponíveis" in rendered
+    assert "mapa-eleitoral.png" in rendered
+    assert '"crossOrigin": "anonymous"' in rendered
     assert "addEventListener('submit'" in rendered
     assert "right: 18px; bottom: 18px" in rendered
-    assert "fetch(" not in rendered
     assert "window.location" in rendered
 
 

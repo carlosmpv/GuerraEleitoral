@@ -326,6 +326,12 @@ def _add_geojson_layer(
     colormap.add_to(mapa)
 
 
+def _create_map(location: list[float], zoom: int) -> folium.Map:
+    mapa = folium.Map(location=location, zoom_start=zoom, tiles=None)
+    folium.TileLayer(tiles="OpenStreetMap", crossOrigin="anonymous").add_to(mapa)
+    return mapa
+
+
 def _panel_select(
     name: str,
     label: str,
@@ -377,7 +383,10 @@ def render_painel_filtros(
     municipality_options = [("", "Todos os municípios")] + [
         (name, name, uf) for name, uf in municipality_items
     ]
-    legend_values = sorted(set(legendas or []) | ({legenda} if legenda else set()))
+    legend_values = sorted(
+        {str(value) for value in legendas or []}
+        | ({str(legenda)} if legenda else set())
+    )
     legend_options = [(value, value) for value in legend_values]
     if not legend_options:
         legend_options = [("", "Sem legenda disponível")]
@@ -397,6 +406,7 @@ def render_painel_filtros(
     {_panel_select("escala", "Escala", [(v, v.capitalize()) for v in ("linear", "quantil", "log")], escala)}
     <button class="mapa-aplicar" type="submit">Aplicar</button>
   </form>
+    <button id="mapa-baixar" class="mapa-baixar" type="button">Baixar imagem PNG</button>
 </section>
 <style>
 #mapa-filtros {{ position: fixed; z-index: 10000; right: 18px; bottom: 18px; width: 290px; max-height: calc(100vh - 36px); overflow: auto; padding: 18px; background: #fff; color: #202b35; box-shadow: 0 8px 32px #12202c40; font: 14px/1.4 system-ui, sans-serif; }}
@@ -404,6 +414,8 @@ def render_painel_filtros(
 #mapa-filtros label {{ display: block; margin: 0 0 11px; font-weight: 600; }}
 #mapa-filtros select {{ display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 9px; border: 1px solid #bdc8ce; border-radius: 3px; background: #fff; color: inherit; font: inherit; }}
 #mapa-filtros .mapa-aplicar {{ width: 100%; padding: 10px; border: 0; background: #087e8b; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }}
+#mapa-filtros .mapa-baixar {{ display: block; width: 100%; margin-top: 9px; padding: 9px; border: 1px solid #087e8b; background: #fff; color: #087e8b; font: inherit; font-weight: 700; cursor: pointer; }}
+#mapa-filtros button:disabled {{ cursor: wait; opacity: 0.65; }}
 #mapa-filtros .mapa-handle {{ display: none; }}
 #mapa-loading {{ position: fixed; inset: 0; z-index: 20000; display: flex; align-items: center; justify-content: center; gap: 14px; background: #f4f7f8ed; color: #202b35; font: 600 15px/1.4 system-ui, sans-serif; transition: opacity 180ms ease, visibility 180ms ease; }}
 #mapa-loading.is-hidden {{ visibility: hidden; opacity: 0; pointer-events: none; }}
@@ -416,6 +428,7 @@ def render_painel_filtros(
   #mapa-filtros .mapa-handle span {{ width: 42px; height: 4px; border-radius: 4px; background: #aab5ba; }}
 }}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script>
 (() => {{
   const panel = document.getElementById('mapa-filtros');
@@ -424,6 +437,38 @@ def render_painel_filtros(
     const loadingMessage = document.getElementById('mapa-loading-message');
     const hideLoading = () => loading.classList.add('is-hidden');
     window.addEventListener('load', hideLoading, {{ once: true }});
+    const downloadButton = document.getElementById('mapa-baixar');
+    downloadButton.addEventListener('click', async () => {{
+        downloadButton.disabled = true;
+        downloadButton.textContent = 'Preparando imagem...';
+        try {{
+            const mapElement = document.querySelector('.leaflet-container');
+            const tiles = [...mapElement.querySelectorAll('.leaflet-tile')];
+            if (!tiles.length || tiles.some((tile) => !tile.complete || !tile.naturalWidth)) {{
+                throw new Error('Tiles do mapa indisponíveis');
+            }}
+            const canvas = await html2canvas(mapElement, {{
+                useCORS: true,
+                backgroundColor: '#f3f6f7',
+                scale: 2,
+                logging: false
+            }});
+            const blob = await new Promise((resolve, reject) =>
+                canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Falha ao gerar PNG')), 'image/png')
+            );
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'mapa-eleitoral.png';
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }} catch (error) {{
+            window.alert('Não foi possível gerar a imagem. Verifique o acesso aos tiles do mapa e tente novamente.');
+        }} finally {{
+            downloadButton.disabled = false;
+            downloadButton.textContent = 'Baixar imagem PNG';
+        }}
+    }});
   form.addEventListener('submit', (event) => {{
     event.preventDefault();
         loadingMessage.textContent = 'Carregando novo mapa...';
@@ -533,7 +578,7 @@ async def _generate_polygon_map(
         len(votes),
     )
     location, zoom = await asyncio.to_thread(resolver_view, estado, None)
-    mapa = folium.Map(location=location, zoom_start=zoom)
+    mapa = _create_map(location, zoom)
     _add_geojson_layer(mapa, malha, votes, escala, cache_key)
     render_painel_filtros(
         mapa, ano, estado, None, getattr(filtro, "prefix", ""), escala, legendas
@@ -637,7 +682,7 @@ async def generate_map(
         ["NM_LOCAL_VOTACAO", "NR_LATITUDE", "NR_LONGITUDE"]
     )
     location, zoom = await asyncio.to_thread(resolver_view, estado, municipio)
-    mapa = folium.Map(location=initial_coords or location, zoom_start=zoom)
+    mapa = _create_map(initial_coords or location, zoom)
     cluster = MarkerCluster().add_to(mapa)
     heat_data = []
     for (name, lat, lon), row in votacao_com_local.iterrows():
