@@ -1,7 +1,11 @@
+import hashlib
+import json
 import logging
 import os
+import threading
 import typing
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -14,10 +18,56 @@ ROOT_PATH = Path(os.getcwd())
 RESOURCES_PATH = ROOT_PATH / ".resources"
 DOWNLOADS_PATH = RESOURCES_PATH / "downloads"
 DATASETS_PATH = RESOURCES_PATH / "datasets"
+DATAFRAME_CACHE_PATH = RESOURCES_PATH / "dataframe_cache"
 
 RESOURCES_PATH.exists() or os.mkdir(RESOURCES_PATH)
 DOWNLOADS_PATH.exists() or os.mkdir(DOWNLOADS_PATH)
 DATASETS_PATH.exists() or os.mkdir(DATASETS_PATH)
+
+
+@lru_cache(maxsize=64)
+def _source_digest(path: str, size: int, modified_ns: int) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def source_fingerprint(*paths: Path) -> list[str]:
+    fingerprints = []
+    for path in paths:
+        stat = path.stat()
+        fingerprints.append(
+            _source_digest(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        )
+    return fingerprints
+
+
+def cache_dataframe(
+    name: str, key: typing.Any, compute: typing.Callable[[], pd.DataFrame]
+) -> pd.DataFrame:
+    serialized_key = json.dumps(
+        {"version": 1, "key": key}, sort_keys=True, ensure_ascii=False, default=str
+    )
+    cache_id = hashlib.sha256(serialized_key.encode("utf-8")).hexdigest()
+    DATAFRAME_CACHE_PATH.mkdir(parents=True, exist_ok=True)
+    cache_path = DATAFRAME_CACHE_PATH / f"{name}_{cache_id}.csv.gz"
+    if cache_path.exists():
+        _logger.info("DataFrame em cache: nome=%s arquivo=%s", name, cache_path)
+        return pd.read_csv(cache_path)
+
+    result = compute()
+    temporary_path = cache_path.with_name(
+        f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        result.to_csv(temporary_path, index=False, compression="gzip")
+        os.replace(temporary_path, cache_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    _logger.info("DataFrame cacheado: nome=%s arquivo=%s", name, cache_path)
+    return result
 
 
 def download(url: str, output: Path):

@@ -19,9 +19,11 @@ from shapely.geometry import shape
 from shapely.ops import unary_union
 
 from mapa.resources import (
+    cache_dataframe,
     download_eleitorado_local_votacao,
     download_votacao_agregada,
     download_votacao_secao,
+    source_fingerprint,
 )
 
 _TypeFiltro = typing.Callable[[pd.DataFrame], pd.Series]
@@ -227,9 +229,7 @@ def _municipality_code_map() -> dict[tuple[str, str], tuple[str, str]]:
     }
 
 
-def _votes_by_municipality(
-    votes: pd.DataFrame,
-) -> dict[tuple[str, str], float]:
+def _votes_by_municipality_frame(votes: pd.DataFrame) -> pd.DataFrame:
     result = votes.copy()
     names_to_codes = _municipality_code_map()
     codes_to_names = {
@@ -252,14 +252,43 @@ def _votes_by_municipality(
     return (
         result.groupby(["CD_IBGE", "IBGE_NAME"], dropna=False)["QT_VOTOS"]
         .sum()
-        .to_dict()
+        .reset_index()
     )
 
 
+def _votes_by_municipality(votes: pd.DataFrame) -> dict[tuple[str, str], float]:
+    grouped = _votes_by_municipality_frame(votes)
+    return {
+        (row.CD_IBGE, row.IBGE_NAME): row.QT_VOTOS
+        for row in grouped.itertuples(index=False)
+    }
+
+
 def _add_geojson_layer(
-    mapa: folium.Map, malha: dict, votes: pd.DataFrame, escala: str
+    mapa: folium.Map,
+    malha: dict,
+    votes: pd.DataFrame,
+    escala: str,
+    cache_key: dict | None = None,
 ) -> None:
-    grouped = _votes_by_municipality(votes)
+    if cache_key is None:
+        grouped = _votes_by_municipality(votes)
+    else:
+        grouped_frame = cache_dataframe(
+            "votos_por_municipio",
+            cache_key,
+            lambda: _votes_by_municipality_frame(votes),
+        )
+        grouped_frame["CD_IBGE"] = grouped_frame["CD_IBGE"].where(
+            grouped_frame["CD_IBGE"].notna(), None
+        )
+        grouped_frame["CD_IBGE"] = grouped_frame["CD_IBGE"].map(
+            lambda code: str(code) if code is not None else None
+        )
+        grouped = {
+            (row.CD_IBGE, row.IBGE_NAME): row.QT_VOTOS
+            for row in grouped_frame.itertuples(index=False)
+        }
     code_votes = {
         code: float(count) for (code, _name), count in grouped.items() if pd.notna(code)
     }
@@ -445,6 +474,9 @@ async def _load_votes(ano: int, estado: str | None) -> pd.DataFrame:
     _logger.info("Carregando votos agregados: ano=%s estado=%s", ano, estado or "BR")
     path = await asyncio.to_thread(download_votacao_agregada, ano, estado)
     votes = pd.read_csv(path)
+    votes.attrs["source_fingerprint"] = (
+        await asyncio.to_thread(source_fingerprint, path)
+    )[0]
     _logger.info(
         "Votos prontos: ano=%s estado=%s registros=%s duracao_s=%.2f",
         ano,
@@ -480,7 +512,21 @@ async def _generate_polygon_map(
     )
     votes = await _load_votes(ano, estado)
     legendas = sorted(votes["NR_VOTAVEL"].astype(str).str[:2].unique().tolist())
-    votes = votes[filtro(votes)]
+    source_digest = votes.attrs.get("source_fingerprint")
+    filter_prefix = getattr(filtro, "prefix", None)
+    cache_key = (
+        {"source": source_digest, "prefix": filter_prefix}
+        if source_digest is not None and filter_prefix is not None
+        else None
+    )
+    if cache_key is None:
+        votes = votes[filtro(votes)]
+    else:
+        votes = cache_dataframe(
+            "votos_filtrados",
+            cache_key,
+            lambda: votes[filtro(votes)].reset_index(drop=True),
+        )
     _logger.info(
         "Votos filtrados: legenda=%s registros=%s",
         getattr(filtro, "prefix", ""),
@@ -488,7 +534,7 @@ async def _generate_polygon_map(
     )
     location, zoom = await asyncio.to_thread(resolver_view, estado, None)
     mapa = folium.Map(location=location, zoom_start=zoom)
-    _add_geojson_layer(mapa, malha, votes, escala)
+    _add_geojson_layer(mapa, malha, votes, escala, cache_key)
     render_painel_filtros(
         mapa, ano, estado, None, getattr(filtro, "prefix", ""), escala, legendas
     )
@@ -540,20 +586,55 @@ async def generate_map(
         ano=ano, estado=estado, municipio=municipio
     )
     _logger.info("CSVs municipais disponíveis; lendo e cruzando dados")
-    votacao_secao = pd.read_csv(votacao_secao_path)
-    legendas = sorted(votacao_secao["NR_VOTAVEL"].astype(str).str[:2].unique().tolist())
-    votacao_secao = votacao_secao[filtro(votacao_secao)]
-    eleitorado_local_votacao = pd.read_csv(eleitorado_local_votacao_path)
-    votacao_com_local = (
-        pd.merge(
-            eleitorado_local_votacao,
-            votacao_secao,
-            on=["CD_MUNICIPIO", "NM_LOCAL_VOTACAO"],
-            how="left",
+    source_digests = await asyncio.to_thread(
+        source_fingerprint, votacao_secao_path, eleitorado_local_votacao_path
+    )
+    vote_source_digest = source_digests[0]
+    legends_frame = cache_dataframe(
+        "legendas_municipais",
+        {"source": vote_source_digest},
+        lambda: (
+            pd.read_csv(votacao_secao_path, usecols=["NR_VOTAVEL"])
+            .assign(NR_VOTAVEL=lambda frame: frame["NR_VOTAVEL"].astype(str).str[:2])[
+                "NR_VOTAVEL"
+            ]
+            .drop_duplicates()
+            .sort_values()
+            .reset_index(drop=True)
+            .to_frame()
+        ),
+    )
+    legendas = legends_frame["NR_VOTAVEL"].tolist()
+    filter_prefix = getattr(filtro, "prefix", None)
+
+    def aggregate_municipal_votes() -> pd.DataFrame:
+        votacao_secao = pd.read_csv(votacao_secao_path)
+        votacao_secao = votacao_secao[filtro(votacao_secao)]
+        eleitorado_local_votacao = pd.read_csv(eleitorado_local_votacao_path)
+        return (
+            pd.merge(
+                eleitorado_local_votacao,
+                votacao_secao,
+                on=["CD_MUNICIPIO", "NM_LOCAL_VOTACAO"],
+                how="left",
+            )
+            .groupby(
+                ["NM_LOCAL_VOTACAO", "NR_LATITUDE", "NR_LONGITUDE"],
+                as_index=False,
+            )["QT_VOTOS"]
+            .sum()
         )
-        .groupby(["NM_LOCAL_VOTACAO", "NR_LATITUDE", "NR_LONGITUDE"])["QT_VOTOS"]
-        .sum()
-        .to_frame()
+
+    if filter_prefix is None:
+        votacao_com_local = aggregate_municipal_votes()
+    else:
+        votacao_com_local = cache_dataframe(
+            "votos_por_local",
+            {"sources": source_digests, "prefix": filter_prefix},
+            aggregate_municipal_votes,
+        )
+    votacao_com_local = votacao_com_local.set_index(
+        ["NM_LOCAL_VOTACAO", "NR_LATITUDE", "NR_LONGITUDE"]
     )
     location, zoom = await asyncio.to_thread(resolver_view, estado, municipio)
     mapa = folium.Map(location=initial_coords or location, zoom_start=zoom)
