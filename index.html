@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mapas Eleitorais - Publicação Estática</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: linear-gradient(135deg, #f4f7f8 0%, #e8eff1 100%); min-height: 100vh; }
+        header { background: linear-gradient(135deg, #087e8b 0%, #065a63 100%); color: white; padding: 40px 20px; text-align: center; box-shadow: 0 4px 20px rgba(8, 126, 139, 0.3); }
+        header h1 { margin: 0 0 10px 0; font-size: 32px; font-weight: 700; }
+        header p { margin: 0; opacity: 0.95; font-size: 16px; }
+        main { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+        .info { background: white; padding: 24px 28px; border-radius: 12px; margin-bottom: 32px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08); border-left: 4px solid #087e8b; }
+        .info h2 { margin: 0 0 12px 0; font-size: 20px; color: #087e8b; }
+        .info p { margin: 8px 0; color: #202b35; line-height: 1.6; }
+        .mapas-section { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08); }
+        .mapas-header { background: #f8fbfc; padding: 20px 28px; border-bottom: 2px solid #e8eff1; }
+        .mapas-header h2 { margin: 0; font-size: 22px; color: #202b35; }
+        .mapas-lista { list-style: none; margin: 0; padding: 0; }
+        .mapa-item { border-bottom: 1px solid #f0f4f6; transition: background 0.2s ease; }
+        .mapa-item:last-child { border-bottom: none; }
+        .mapa-item:hover { background: #f8fbfc; }
+        .mapa-item a { display: flex; flex-direction: column; padding: 18px 28px; text-decoration: none; color: inherit; gap: 6px; }
+        .mapa-nome { font-size: 16px; font-weight: 600; color: #087e8b; }
+        .mapa-arquivo { font-size: 13px; color: #6b7c85; font-family: 'Courier New', monospace; }
+        .vazio { padding: 40px 28px; text-align: center; color: #6b7c85; font-style: italic; }
+        footer { text-align: center; padding: 30px 20px; color: #6b7c85; font-size: 14px; }
+        .gerado-em { margin-top: 10px; font-size: 12px; opacity: 0.8; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Mapas Eleitorais</h1>
+        <p>Versões estáticas para publicação no GitHub Pages</p>
+    </header>
+    <main>
+        <section class="info">
+            <h2>Sobre</h2>
+            <p>Estes são mapas eleitorais gerados e exportados para visualização estática. Cada mapa pode ser visualizado diretamente no navegador sem necessidade de servidor.</p>
+            <p><strong>Fonte:</strong> Dados do TSE e malhas do IBGE</p>
+        </section>
+        <section class="mapas-section">
+            <div class="mapas-header">
+                <h2>Mapas Disponíveis (1)</h2>
+            </div>
+            <ul class="mapas-lista">
+                <li class="mapa-item">
+                    <a href="./mapa-ribeirao-preto-sp-2026-legenda-80.html" target="_blank" rel="noopener">
+                        <span class="mapa-nome">Mapa Ribeirao Preto Sp 2026 Legenda 80</span>
+                        <span class="mapa-arquivo">mapa-ribeirao-preto-sp-2026-legenda-80.html</span>
+                    </a>
+                </li>
+
+            </ul>
+        </section>
+    </main>
+    <footer>
+        <div>Mapas da Guerra Eleitoral</div>
+        <div class="gerado-em">Gerado em: 22/10/2026 13:43:34</div>
+    </footer>
+</body>
+</html>

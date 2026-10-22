@@ -178,7 +178,7 @@ async def exportar_osm_guias():
     </section>
     <section class="card">
         <h2>Exportação estática para GitHub Pages</h2>
-        <p>Gere versões HTML limpas (sem formulários) para publicar na pasta <code>mapa/public/</code>.</p>
+        <p>Gere versões HTML limpas (sem formulários) para publicar na pasta <code>mapa/</code>.</p>
         <div class="actions">
             <a class="btn btn-primary" href="/exportar/estatico/gerar-index">Gerar/Atualizar index.html</a>
         </div>
@@ -236,7 +236,7 @@ async def exportar_estatico_gui():
 <body>
     <header>
         <h1>Exportar mapas estáticos</h1>
-        <p class="sub">Gera arquivos HTML limpos em <code>mapa/public/</code> para publicação direta no GitHub Pages.</p>
+        <p class="sub">Gera arquivos HTML limpos em <code>mapa/</code> para publicação direta no GitHub Pages.</p>
     </header>
     <section class="card">
         <h2>1) Mapa Municipal (Ribeirão Preto)</h2>
@@ -249,9 +249,9 @@ async def exportar_estatico_gui():
             <label>Escala<select id="m-esc"><option value="linear">Linear</option><option value="quantil">Quantil</option><option value="log">Log</option></select></label>
         </div>
         <div class="actions">
-            <button class="btn btn-primary" onclick="exportar('municipio')">Exportar para public/</button>
+            <button class="btn btn-primary" onclick="exportar('municipio')">Publicar</button>
             <a class="btn btn-ghost" href="/exportar/estatico/gerar-index">Gerar/Atualizar index.html</a>
-            <a class="btn btn-ghost" href="/public/index.html" target="_blank">Ver index</a>
+            <a class="btn btn-ghost" href="/index.html" target="_blank">Ver index</a>
         </div>
         <div id="m-status" class="note" style="display:none"></div>
     </section>
@@ -265,7 +265,7 @@ async def exportar_estatico_gui():
             <label>Escala<select id="e-esc"><option value="linear">Linear</option><option value="quantil">Quantil</option><option value="log">Log</option></select></label>
         </div>
         <div class="actions">
-            <button class="btn btn-primary" onclick="exportar('estado')">Exportar para public/</button>
+            <button class="btn btn-primary" onclick="exportar('estado')">Publicar</button>
         </div>
         <div id="e-status" class="note" style="display:none"></div>
     </section>
@@ -278,7 +278,7 @@ async def exportar_estatico_gui():
             <label>Escala<select id="b-esc"><option value="linear">Linear</option><option value="quantil">Quantil</option><option value="log">Log</option></select></label>
         </div>
         <div class="actions">
-            <button class="btn btn-primary" onclick="exportar('brasil')">Exportar para public/</button>
+            <button class="btn btn-primary" onclick="exportar('brasil')">Publicar</button>
         </div>
         <div id="b-status" class="note" style="display:none"></div>
     </section>
@@ -286,8 +286,8 @@ async def exportar_estatico_gui():
         <h2>Instruções</h2>
         <ol>
             <li>Exporte os mapas que deseja publicar usando os botões acima.</li>
-            <li>Clique em "Gerar/Atualizar index.html" para criar a lista com todos os mapas em <code>mapa/public/</code>.</li>
-            <li>Suba a pasta <code>mapa/public/</code> inteira no seu repositório do GitHub e ative o GitHub Pages apontando para ela.</li>
+            <li>Clique em "Gerar/Atualizar index.html" para criar a lista com todos os mapas em <code>mapa/</code>.</li>
+            <li>Suba a pasta <code>mapa/</code> inteira no seu repositório do GitHub e ative o GitHub Pages apontando para ela.</li>
         </ol>
         <p>Os arquivos gerados não possuem formulário, filtros ou botões interativos - apenas o mapa visual.</p>
     </section>
@@ -323,7 +323,7 @@ async def exportar_estatico_gui():
                 const resp=await fetch(url);
                 const data=await resp.json();
                 if(resp.ok){
-                    status.innerHTML=`✅ <strong>${data.titulo}</strong><br>Arquivo: <code>${data.arquivo}</code><br><a href="./public/${data.arquivo}" target="_blank">Visualizar</a>`;
+                    status.innerHTML=`✅ <strong>${data.titulo}</strong><br>Arquivo: <code>${data.arquivo}</code><br><a href="./${data.arquivo}" target="_blank">Visualizar</a>`;
                 }else{
                     status.textContent='❌ Erro: '+(data.detail||'Desconhecido');
                 }
