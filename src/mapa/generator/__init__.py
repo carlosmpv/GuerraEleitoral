@@ -537,6 +537,7 @@ async def _generate_polygon_map(
     filtro: _TypeFiltro,
     escala: str,
     estado: str | None,
+    incluir_painel: bool = True,
 ) -> str:
     started = time.perf_counter()
     malha_nivel, malha_id = (
@@ -580,9 +581,10 @@ async def _generate_polygon_map(
     location, zoom = await asyncio.to_thread(resolver_view, estado, None)
     mapa = _create_map(location, zoom)
     _add_geojson_layer(mapa, malha, votes, escala, cache_key)
-    render_painel_filtros(
-        mapa, ano, estado, None, getattr(filtro, "prefix", ""), escala, legendas
-    )
+    if incluir_painel:
+        render_painel_filtros(
+            mapa, ano, estado, None, getattr(filtro, "prefix", ""), escala, legendas
+        )
     _logger.info("Serializando HTML do mapa de malha")
     content = mapa.get_root().render()
     _logger.info(
@@ -597,15 +599,196 @@ async def _generate_polygon_map(
 
 
 async def generate_map_brasil(
-    ano: int, filtro: _TypeFiltro, /, escala: str = "linear"
+    ano: int,
+    filtro: _TypeFiltro,
+    /,
+    escala: str = "linear",
+    incluir_painel: bool = True,
 ) -> str:
-    return await _generate_polygon_map(ano, filtro, escala, None)
+    return await _generate_polygon_map(ano, filtro, escala, None, incluir_painel=incluir_painel)
 
 
 async def generate_map_estado(
-    ano: int, filtro: _TypeFiltro, /, estado: str, escala: str = "linear"
+    ano: int,
+    filtro: _TypeFiltro,
+    /,
+    estado: str,
+    escala: str = "linear",
+    incluir_painel: bool = True,
 ) -> str:
-    return await _generate_polygon_map(ano, filtro, escala, estado)
+    return await _generate_polygon_map(ano, filtro, escala, estado, incluir_painel=incluir_painel)
+
+
+async def gerar_camada_votos_municipio(
+    ano: int,
+    estado: str | None,
+    legenda: str,
+) -> dict:
+    """Gera uma FeatureCollection GeoJSON com votos por município."""
+    malha_nivel, malha_id = (
+        ("estados", _UF_CODES[estado]) if estado else ("paises", "BR")
+    )
+    malha = await asyncio.to_thread(_fetch_malha_ibge, malha_nivel, malha_id)
+    votes = await _load_votes(ano, estado)
+    filtro = filtro_partido(legenda)
+    votes = votes[filtro(votes)]
+    grouped_frame = _votes_by_municipality_frame(votes)
+    grouped_frame["CD_IBGE"] = grouped_frame["CD_IBGE"].where(
+        grouped_frame["CD_IBGE"].notna(), None
+    )
+    grouped_frame["CD_IBGE"] = grouped_frame["CD_IBGE"].map(
+        lambda code: str(code) if code is not None else None
+    )
+    code_votes = {
+        row.CD_IBGE: float(row.QT_VOTOS) for row in grouped_frame.itertuples(index=False) if pd.notna(row.CD_IBGE)
+    }
+    names_by_code = {
+        row.CD_IBGE: row.IBGE_NAME for row in grouped_frame.itertuples(index=False) if pd.notna(row.CD_IBGE)
+    }
+
+    # votos totais por município (todas as legendas) para comparação
+    votes_total = await _load_votes(ano, estado)
+    grouped_total = _votes_by_municipality_frame(votes_total)
+    grouped_total["CD_IBGE"] = grouped_total["CD_IBGE"].where(
+        grouped_total["CD_IBGE"].notna(), None
+    )
+    grouped_total["CD_IBGE"] = grouped_total["CD_IBGE"].map(
+        lambda code: str(code) if code is not None else None
+    )
+    code_votes_total = {
+        row.CD_IBGE: float(row.QT_VOTOS) for row in grouped_total.itertuples(index=False) if pd.notna(row.CD_IBGE)
+    }
+
+    geojson = copy.deepcopy(malha)
+    for feature in geojson["features"]:
+        code = feature["properties"]["codarea"]
+        nome_municipio = names_by_code.get(code, feature["properties"].get("name") or "Sem dados")
+        feature["properties"] = {
+            "codarea": code,
+            "municipio_nome": nome_municipio,
+            "votos": code_votes.get(code, 0.0),
+            "votos_total": code_votes_total.get(code, 0.0),
+            "ano": ano,
+            "uf": estado,
+            "legenda": legenda,
+        }
+    return geojson
+
+
+async def gerar_camada_locais_votacao(
+    ano: int,
+    estado: str,
+    municipio: str,
+    legenda: str,
+) -> dict:
+    """Gera uma FeatureCollection GeoJSON com locais de votação e votos da legenda."""
+    votacao_secao_path, eleitorado_local_votacao_path = await download_resources(
+        ano=ano, estado=estado, municipio=municipio
+    )
+    source_digests = await asyncio.to_thread(
+        source_fingerprint, votacao_secao_path, eleitorado_local_votacao_path
+    )
+    filtro = filtro_partido(legenda)
+
+    def aggregate_local() -> pd.DataFrame:
+        votacao_secao = pd.read_csv(votacao_secao_path)
+        votacao_secao_filtrada = votacao_secao[filtro(votacao_secao)]
+        votos_por_local = (
+            votacao_secao_filtrada.groupby("NM_LOCAL_VOTACAO", as_index=False)["QT_VOTOS"].sum()
+        )
+        eleitorado_local_votacao = pd.read_csv(eleitorado_local_votacao_path)
+        return pd.merge(
+            eleitorado_local_votacao,
+            votos_por_local,
+            on=["NM_LOCAL_VOTACAO"],
+            how="left",
+        )
+
+    votacao_com_local = cache_dataframe(
+        "votos_por_local_export",
+        {"sources": source_digests, "prefix": legenda},
+        aggregate_local,
+    )
+    votacao_com_local["QT_VOTOS"] = votacao_com_local["QT_VOTOS"].fillna(0.0)
+
+    # total geral por local (todas legendas)
+    def aggregate_local_total() -> pd.DataFrame:
+        votacao_secao = pd.read_csv(votacao_secao_path)
+        votos_por_local = (
+            votacao_secao.groupby("NM_LOCAL_VOTACAO", as_index=False)["QT_VOTOS"].sum()
+        )
+        return votos_por_local.rename(columns={"QT_VOTOS": "QT_VOTOS_TOTAL"})
+
+    votos_total_local = cache_dataframe(
+        "votos_por_local_export_total",
+        {"source": source_digests[0]},
+        aggregate_local_total,
+    )
+
+    votacao_com_local = pd.merge(
+        votacao_com_local, votos_total_local, on=["NM_LOCAL_VOTACAO"], how="left"
+    )
+    votacao_com_local["QT_VOTOS_TOTAL"] = votacao_com_local["QT_VOTOS_TOTAL"].fillna(0.0)
+
+    # agrega seções por local (muitos locais têm várias seções)
+    agregado = votacao_com_local.groupby(
+        [
+            "NM_LOCAL_VOTACAO",
+            "NR_LATITUDE",
+            "NR_LONGITUDE",
+            "DS_ENDERECO",
+            "NM_BAIRRO",
+            "NR_CEP",
+            "NR_ZONA",
+            "CD_TIPO_LOCAL",
+            "DS_TIPO_LOCAL",
+        ],
+        as_index=False,
+    ).agg(
+        QT_VOTOS=("QT_VOTOS", "sum"),
+        QT_VOTOS_TOTAL=("QT_VOTOS_TOTAL", "sum"),
+        QT_ELEITOR_SECAO=("QT_ELEITOR_SECAO", "sum"),
+        NR_SECOES=("NR_SECAO", "nunique"),
+    )
+
+    features = []
+    for _, row in agregado.iterrows():
+        try:
+            lat = float(str(row["NR_LATITUDE"]).replace(",", "."))
+            lon = float(str(row["NR_LONGITUDE"]).replace(",", "."))
+        except (ValueError, TypeError):
+            continue
+        nome_local = str(row["NM_LOCAL_VOTACAO"])
+        endereco = str(row["DS_ENDERECO"]) if pd.notna(row["DS_ENDERECO"]) else ""
+        bairro = str(row["NM_BAIRRO"]) if pd.notna(row["NM_BAIRRO"]) else ""
+        cep = str(row["NR_CEP"]) if pd.notna(row["NR_CEP"]) else ""
+        tipo_local = str(row["DS_TIPO_LOCAL"]) if pd.notna(row["DS_TIPO_LOCAL"]) else ""
+        zona = int(row["NR_ZONA"]) if pd.notna(row["NR_ZONA"]) else None
+        secoes = int(row["NR_SECOES"]) if pd.notna(row["NR_SECOES"]) else None
+        eleitorado = int(row["QT_ELEITOR_SECAO"]) if pd.notna(row["QT_ELEITOR_SECAO"]) else None
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "nome_local": nome_local,
+                    "endereco": endereco,
+                    "bairro": bairro,
+                    "cep": cep,
+                    "zona": zona,
+                    "tipo_local": tipo_local,
+                    "secoes": secoes,
+                    "eleitorado": eleitorado,
+                    "votos": float(row["QT_VOTOS"]),
+                    "votos_total": float(row["QT_VOTOS_TOTAL"]),
+                    "ano": ano,
+                    "estado": estado,
+                    "municipio": municipio,
+                    "legenda": legenda,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
 
 
 async def generate_map(
@@ -617,6 +800,7 @@ async def generate_map(
     initial_coords: list[float] | None = None,
     overwrite: bool = False,
     escala: str = "linear",
+    incluir_painel: bool = True,
 ) -> str:
     started = time.perf_counter()
     _logger.info(
@@ -718,15 +902,16 @@ async def generate_map(
     ).add_to(mapa)
     _, colormap = normalizar(values, escala)
     colormap.add_to(mapa)
-    render_painel_filtros(
-        mapa,
-        ano,
-        estado,
-        municipio,
-        getattr(filtro, "prefix", ""),
-        escala,
-        legendas,
-    )
+    if incluir_painel:
+        render_painel_filtros(
+            mapa,
+            ano,
+            estado,
+            municipio,
+            getattr(filtro, "prefix", ""),
+            escala,
+            legendas,
+        )
     _logger.info("Serializando HTML do mapa municipal")
     content = mapa.get_root().render()
     _logger.info(
@@ -738,3 +923,65 @@ async def generate_map(
         time.perf_counter() - started,
     )
     return content
+
+
+def _injecar_exportacao_osm(mapa: folium.Map) -> None:
+    """Adiciona um botão "Exportar camadas para OSM" ao painel do mapa."""
+    html_botao = """
+<script>
+(() => {
+  const painel = document.getElementById('mapa-filtros');
+  if (!painel) return;
+  const form = document.getElementById('mapa-filtros-form');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mapa-exportar-osm';
+  btn.textContent = 'Exportar camadas para OSM (.OSM / .GeoJSON)';
+  btn.addEventListener('click', () => {
+    const dados = new FormData(form);
+    const ano = dados.get('ano') || '2026';
+    const estado = dados.get('estado') || '';
+    const municipio = dados.get('municipio') || '';
+    const legenda = dados.get('legenda') || '80';
+    const params = new URLSearchParams({ano, estado, municipio, legenda, formato: 'zip'});
+    const url = municipio
+      ? `/exportar/osm/locais-votacao?${params.toString()}`
+      : estado
+        ? `/exportar/osm/votos-municipio?${params.toString()}`
+        : '/exportar/osm';
+    window.open(url, '_blank');
+  });
+  const baixar = document.getElementById('mapa-baixar');
+  if (baixar) {
+    baixar.insertAdjacentElement('afterend', btn);
+  } else {
+    painel.querySelector('form').insertAdjacentElement('afterend', btn);
+  }
+  const style = document.createElement('style');
+  style.textContent = '#mapa-filtros .mapa-exportar-osm{display:block;width:100%;margin-top:9px;padding:9px;border:1px solid #1f6f8b;background:#f4fbfd;color:#1f6f8b;font:inherit;font-weight:700;cursor:pointer}';
+  document.head.appendChild(style);
+})();
+</script>
+"""
+    mapa.get_root().html.add_child(folium.Element(html_botao))
+
+
+# Injeta exportação OSM no painel existente
+_original_render_painel_filtros = render_painel_filtros
+
+
+def render_painel_filtros_com_exportacao_osm(
+    mapa: folium.Map,
+    ano: int,
+    estado: str | None,
+    municipio: str | None,
+    legenda: str,
+    escala: str,
+    legendas: list[str] | None = None,
+) -> None:
+    _original_render_painel_filtros(mapa, ano, estado, municipio, legenda, escala, legendas)
+    _injecar_exportacao_osm(mapa)
+
+
+render_painel_filtros = render_painel_filtros_com_exportacao_osm
+
